@@ -1,5 +1,5 @@
 const express = require('express');
-const mongoose = require('mongoose');
+const mariadb = require('mariadb');
 const bcrypt = require('bcrypt');
 const passport = require('passport');
 const session = require('express-session');
@@ -8,24 +8,48 @@ const path = require('path');
 
 const app = express();
 
-// Connect to MongoDB
-mongoose.connect('mongodb://localhost/test');
+// Install required modules if not exist
+const installRequiredModules = () => {
+  const requiredModules = ['express', 'mariadb', 'bcrypt', 'passport', 'express-session', 'passport-local', 'path'];
+  requiredModules.forEach(module => {
+    try {
+      require.resolve(module);
+    } catch (err) {
+      console.log(`Module ${module} not found. Installing...`);
+      const { exec } = require('child_process');
+      exec(`npm install ${module}`, (error, stdout, stderr) => {
+        if (error) {
+          console.error(`Error installing ${module}: ${error}`);
+          return;
+        }
+        console.log(`Module ${module} installed successfully`);
+      });
+    }
+  });
+};
+
+installRequiredModules();
+
+// Connect to MariaDB
+mariadb.createConnection({host: 'localhost', user: 'root', password: '12345', database: 'test'})
+.then(conn => {
+  global.conn = conn;
+})
+.catch(err => {
+  console.log('Unable to connect to MariaDB:', err);
+});
 
 // Define User schema and model (Make sure to define this part)
-const UserSchema = new mongoose.Schema({
-  email: String,
-  password: String
-});
-const User = mongoose.model('User', UserSchema);
+const User = { email: String, password: String };
 
 // Passport configuration
 passport.use(new LocalStrategy({ usernameField: 'email' }, async (email, password, done) => {
   try {
-    const user = await User.findOne({ email: email }).exec();
-    if (!user || !bcrypt.compareSync(password, user.password)) {
+    const user = await global.conn.query('SELECT * FROM users WHERE email = ?', [email]);
+    if (!user || !bcrypt.compareSync(password, user[0].password)) {
       return done(null, false);
     }
-    return done(null, user);
+    return done(null, user[0]);
   } catch (error) {
     return done(error);
   }
@@ -35,10 +59,9 @@ passport.serializeUser((user, done) => {
   done(null, user.id);
 });
 
-passport.deserializeUser((id, done) => {
-  User.findById(id, (err, user) => {
-    done(err, user);
-  });
+passport.deserializeUser(async (id, done) => {
+  const user = await global.conn.query('SELECT * FROM users WHERE id = ?', [id]);
+  done(null, user[0]);
 });
 
 // Middleware
@@ -47,6 +70,8 @@ app.use(session({ secret: 'secret', resave: false, saveUninitialized: true }));
 app.use(passport.initialize());
 app.use(passport.session());
 
+
+
 // Routes
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'views', 'home.html')));
 
@@ -54,25 +79,18 @@ app.all('/login', (req, res) => {
   if (req.method === 'GET') {
     res.sendFile(path.join(__dirname, 'views', 'login.html'));
   } else if (req.method === 'POST') {
-    passport.authenticate('local', { successRedirect: '/', failureRedirect: '/login' })(req, res);
+    passport.authenticate('local', {
+      successRedirect: '/dashboard', // Redirect to the new page
+      failureRedirect: '/login'
+    })(req, res);
   }
 });
 
-app.get('/logout', (req, res) => {
-  req.logout();
-  res.redirect('/login');
+// Route for the new page (example)
+app.get('/dashboard', (req, res) => {
+  res.sendFile(path.join(__dirname, 'views', 'dashboard.html'));
 });
 
-app.get('/signup', (req, res) => {
-  res.sendFile(path.join(__dirname, 'views', 'signup.html'));
-});
-
-app.post('/signup', (req, res) => {
-  const hashedPassword = bcrypt.hashSync(req.body.password, 10);
-  new User({ email: req.body.email, password: hashedPassword }).save();
-  res.redirect('/login');
-});
 
 // Start the server
 app.listen(3000, () => console.log('Server started on port 3000'));
-
